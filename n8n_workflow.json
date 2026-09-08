@@ -1,0 +1,920 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "blog-ingest",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "9cd86e30-0c39-43a6-b682-db1dffb3e6e7",
+      "name": "Webhook Trigger1",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        -2816,
+        992
+      ],
+      "webhookId": "f4b62662-5705-4432-bb0c-8d91f1732bf1",
+      "notes": "Entry point — receives blog text + optional base64 image from FastAPI/Streamlit"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8000/api/store-blog",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  JSON.stringify({\n    blog_text: $json.body?.blog_text || \"\",\n    has_image: $json.body?.has_image || false,\n    image_base64: $json.body?.image_base64 || \"\"\n  })\n}}",
+        "options": {}
+      },
+      "id": "ba765b6b-eb80-4d3b-9e63-58336476a6ec",
+      "name": "FastAPI Store Blog1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -2592,
+        992
+      ],
+      "notes": "Stores blog in SQLite via FastAPI — returns blog_id"
+    },
+    {
+      "parameters": {
+        "url": "=http://127.0.0.1:8000/api/blog/{{ $json.blog_id }}",
+        "options": {}
+      },
+      "id": "cd691f1b-2867-401f-a821-cf08848e68b0",
+      "name": "FastAPI Fetch Blog1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -2368,
+        992
+      ],
+      "notes": "Fetches stored blog content — needed for ChromaDB embedding step"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8000/api/chromadb/query",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  JSON.stringify({\n    blog_text: $json.blog_text || \"\",\n    n_results: 3\n  })\n}}",
+        "options": {}
+      },
+      "id": "2f18b24c-eae0-49d7-b947-610d1ebaa60f",
+      "name": "Query ChromaDB Brand Memory1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -2144,
+        992
+      ],
+      "notes": "RAG step — retrieves brand tone/style from ChromaDB via FastAPI endpoint"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent?key=YOUR_GEMINI_API_KEY",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-goog-api-key",
+              "value": "YOUR_GEMINI_API_KEY"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  JSON.stringify({\n    contents: [\n      {\n        parts: [\n          {\n            text: `You are a social media content expert. Using the blog content and brand memory below, generate 2 platform-specific posts.\n\nBLOG CONTENT:\n${$('FastAPI Fetch Blog1').item.json.blog_text || \"\"}\n\nBRAND MEMORY / TONE:\n${$json.brand_context || \"\"}\n\nGenerate EXACTLY this JSON structure with no extra text:\n{\n  \"linkedin\": \"[150-200 words, professional tone, storytelling hook, 3 relevant hashtags at end]\",\n  \"discord\": \"[casual, engaging, use 2-3 emojis, max 300 chars, community feel]\"\n}`\n          }\n        ]\n      }\n    ],\n    generationConfig: {\n      temperature: 0.7,\n      maxOutputTokens: 4096\n    }\n  })\n}}",
+        "options": {}
+      },
+      "id": "e56477fb-5abb-49f5-9f1e-805c318dd545",
+      "name": "Gemini Generate Posts1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -1936,
+        992
+      ],
+      "retryOnFail": true,
+      "notes": "GEMINI ONLY for content generation — gemini-2.0-flash — 1 call per run to save quota. Gemini 2.5 Flash-Lite also works (15RPM, 1000RPD free tier)"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $('Webhook Trigger1').item.json.body.has_image }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "fa23d3f8-5971-4d66-b3b3-513027bced6a",
+      "name": "Image Uploaded?1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -1712,
+        992
+      ],
+      "notes": "IF node — YES branch goes to Groq vision check, NO branch skips to Grounding Check"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_GROQ_API_KEY"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  JSON.stringify({\n    model: \"qwen/qwen3.6-27b\",\n\n    messages: [\n      {\n        role: \"system\",\n        content: \"You are a strict image relevance reviewer. Analyze the image and blog together. Return ONLY valid JSON.\"\n      },\n      {\n        role: \"user\",\n        content: [\n          {\n            type: \"image_url\",\n            image_url: {\n              url: (() => {\n                const b64 = $('FastAPI Fetch Blog1').item.json.image_base64 || \"\";\n                return b64.startsWith(\"data:\")\n                  ? b64\n                  : `data:image/png;base64,${b64}`;\n              })()\n            }\n          },\n          {\n            type: \"text\",\n            text: `Check whether this image is relevant to this blog.\n\nBLOG:\n${($('FastAPI Fetch Blog1').item.json.blog_text || \"\").substring(0, 2500)}\n\nReturn ONLY this JSON object:\n\n{\n  \"image_relevant\": true,\n  \"relevance_score\": 85,\n  \"image_quality\": 90,\n  \"image_safe\": true,\n  \"reason\": \"Short reason\"\n}\n\nRules:\n- image_relevant must be true or false\n- relevance_score must be 0-100\n- image_quality must be 0-100\n- image_safe must be true or false\n- reason must be one short sentence\n- No markdown\n- No extra text`\n          }\n        ]\n      }\n    ],\n\n    temperature: 0.1,\n    max_completion_tokens: 300,\n    reasoning_effort: \"none\",\n    include_reasoning: false\n  })\n}}",
+        "options": {}
+      },
+      "id": "f30b16ae-7128-498b-8c24-02fd95f6b003",
+      "name": "Groq Multimodal Image Check1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -1360,
+        976
+      ],
+      "notes": "GROQ vision model qwen/qwen3.6-27b — current 2026 Groq vision model. Each image = 2048 tokens. Max 5 images per request."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_GROQ_API_KEY"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  JSON.stringify({\n    model: \"openai/gpt-oss-20b\",\n\n    messages: [\n      {\n        role: \"system\",\n        content: \"You are a strict content fact-checker and quality gate. Return ONLY valid JSON. Do not provide reasoning. Keep the reason under 15 words.\"\n      },\n      {\n        role: \"user\",\n        content: `Evaluate the generated social media posts against the original blog.\n\nGROUNDING:\nCheck whether every factual claim in the generated posts is supported by the original blog. Any unsupported or invented factual claim means claims_match=false.\n\nQUALITY:\nScore 0-100 based on tone, clarity, platform fit, and engagement.\n\nSTATUS:\nPASS = quality_score > 75 AND claims_match=true\nREVIEW = quality_score 50-75 AND claims_match=true\nBLOCK = quality_score < 50 OR claims_match=false\n\nORIGINAL BLOG:\n${($('FastAPI Fetch Blog1').item.json.blog_text || \"\").substring(0, 3000)}\n\nGENERATED POSTS:\n${$('Gemini Generate Posts1').item.json.candidates?.[0]?.content?.parts?.[0]?.text || \"\"}\n\nReturn ONLY:\n{\n  \"grounding_score\": 0,\n  \"claims_match\": true,\n  \"quality_score\": 0,\n  \"status\": \"PASS\",\n  \"reason\": \"brief reason\"\n}`\n      }\n    ],\n\n    reasoning_effort: \"low\",\n    include_reasoning: false,\n\n    response_format: {\n      type: \"json_object\"\n    },\n\n    max_tokens: 500,\n    temperature: 0.1\n  })\n}}",
+        "options": {}
+      },
+      "id": "64647e71-e14f-403d-b6ab-a88c15fb1a1e",
+      "name": "Groq Grounding & Quality Gate1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -1408,
+        1232
+      ],
+      "notes": "GROQ openai/gpt-oss-20b — replaces deprecated llama-3.1-8b-instant — Grounding + Quality in ONE combined call to save quota. Free tier: 14,400 RPD."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ JSON.parse($('Groq Grounding & Quality Gate1').item.json.choices[0].message.content).status }}",
+              "value2": "BLOCK"
+            }
+          ]
+        }
+      },
+      "id": "d1f01888-8bab-4845-8b01-e4734b6c608f",
+      "name": "Is Blocked?1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -1200,
+        1232
+      ],
+      "notes": "BLOCK → save blocked record + stop. PASS or REVIEW → continue to draft saving"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8000/api/save-result",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "0c070b63-6826-458e-85c5-0a2c3157a69b",
+      "name": "Save Blocked Record1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -672,
+        1104
+      ],
+      "notes": "Saves blocked posts to SQLite with status=blocked so history is never lost"
+    },
+    {
+      "parameters": {
+        "sendTo": "YOUR_EMAIL@gmail.com",
+        "subject": "=🚀 Campaign Ready — Blog #{{ $('FastAPI Store Blog1').item.json.blog_id }} | Score: {{ JSON.parse($('Groq Grounding & Quality Gate1').item.json.choices[0].message.content).quality_score }}/100",
+        "message": "=<!DOCTYPE html>\n<html>\n<head>\n  <meta charset=\"UTF-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n</head>\n<body style=\"margin:0;padding:0;background-color:#000000;font-family:'Segoe UI',Arial,sans-serif;\">\n  <table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background-color:#000000;padding:40px 20px;\">\n    <tr>\n      <td align=\"center\">\n        <table width=\"620\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:linear-gradient(135deg,#0d0d1a 0%,#0a0a14 100%);border:1px solid rgba(124,58,237,0.25);border-radius:16px;overflow:hidden;\">\n\n          <!-- Header -->\n          <tr>\n            <td style=\"padding:32px 36px 24px;border-bottom:1px solid rgba(255,255,255,0.06);\">\n              <table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">\n                <tr>\n                  <td>\n                    <p style=\"margin:0 0 4px;font-size:11px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#7c3aed;\">AI-POWERED CAMPAIGN</p>\n                    <h1 style=\"margin:0;font-size:22px;font-weight:700;color:#ffffff;letter-spacing:-0.3px;\">⚡ Campaign Ready for Review</h1>\n                    <p style=\"margin:6px 0 0;font-size:13px;color:#475569;\">Multimodal Content Generation & Publishing Automation</p>\n                  </td>\n                  <td align=\"right\" valign=\"top\">\n                    <span style=\"display:inline-block;background:rgba(124,58,237,0.15);border:1px solid rgba(124,58,237,0.35);color:#a78bfa;font-size:11px;font-weight:600;padding:6px 14px;border-radius:20px;letter-spacing:0.5px;\">PENDING REVIEW</span>\n                  </td>\n                </tr>\n              </table>\n            </td>\n          </tr>\n\n          <!-- Stats Row -->\n          <tr>\n            <td style=\"padding:24px 36px;\">\n              <table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">\n                <tr>\n                  <td width=\"33%\" style=\"padding-right:12px;\">\n                    <div style=\"background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:16px 18px;\">\n                      <p style=\"margin:0 0 6px;font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:1px;\">Blog ID</p>\n                      <p style=\"margin:0;font-size:13px;font-weight:600;color:#a78bfa;\">{{ $('FastAPI Store Blog1').item.json.blog_id }}</p>\n                    </div>\n                  </td>\n                  <td width=\"33%\" style=\"padding-right:12px;\">\n                    <div style=\"background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:16px 18px;\">\n                      <p style=\"margin:0 0 6px;font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:1px;\">Quality Score</p>\n                      <p style=\"margin:0;font-size:24px;font-weight:700;color:#22c55e;\">{{ JSON.parse($('Groq Grounding & Quality Gate1').item.json.choices[0].message.content).quality_score }}<span style=\"font-size:13px;color:#475569;font-weight:400;\">/100</span></p>\n                    </div>\n                  </td>\n                  <td width=\"33%\">\n                    <div style=\"background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:16px 18px;\">\n                      <p style=\"margin:0 0 6px;font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:1px;\">Status</p>\n                      <p style=\"margin:0;font-size:13px;font-weight:700;color:#22c55e;\">{{ JSON.parse($('Groq Grounding & Quality Gate1').item.json.choices[0].message.content).status }}</p>\n                    </div>\n                  </td>\n                </tr>\n              </table>\n            </td>\n          </tr>\n\n          <!-- Validation Details -->\n          <tr>\n            <td style=\"padding:0 36px 24px;\">\n              <div style=\"background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:20px 24px;\">\n                <p style=\"margin:0 0 14px;font-size:11px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:#475569;\">VALIDATION RESULTS</p>\n                <table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">\n                  <tr>\n                    <td style=\"padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04);\">\n                      <span style=\"font-size:13px;color:#64748b;\">Grounding Score</span>\n                    </td>\n                    <td align=\"right\" style=\"padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04);\">\n                      <span style=\"font-size:13px;font-weight:600;color:#a78bfa;\">{{ JSON.parse($('Groq Grounding & Quality Gate1').item.json.choices[0].message.content).grounding_score }}/100</span>\n                    </td>\n                  </tr>\n                  <tr>\n                    <td style=\"padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04);\">\n                      <span style=\"font-size:13px;color:#64748b;\">Claims Verified</span>\n                    </td>\n                    <td align=\"right\" style=\"padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04);\">\n                      <span style=\"font-size:13px;font-weight:600;color:#22c55e;\">{{ JSON.parse($('Groq Grounding & Quality Gate1').item.json.choices[0].message.content).claims_match ? '✓ Verified' : '⚠ Check Required' }}</span>\n                    </td>\n                  </tr>\n                  <tr>\n                    <td style=\"padding:6px 0;\">\n                      <span style=\"font-size:13px;color:#64748b;\">AI Reason</span>\n                    </td>\n                    <td align=\"right\" style=\"padding:6px 0;\">\n                      <span style=\"font-size:13px;color:#94a3b8;\">{{ JSON.parse($('Groq Grounding & Quality Gate1').item.json.choices[0].message.content).reason }}</span>\n                    </td>\n                  </tr>\n                </table>\n              </div>\n            </td>\n          </tr>\n\n          <!-- LinkedIn Post Preview -->\n          <tr>\n            <td style=\"padding:0 36px 16px;\">\n              <div style=\"background:rgba(255,255,255,0.02);border:1px solid rgba(96,165,250,0.2);border-radius:12px;padding:20px 24px;\">\n                <p style=\"margin:0 0 12px;font-size:11px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:#60a5fa;\">🔵 LINKEDIN POST</p>\n                <p style=\"margin:0;font-size:13px;color:#cbd5e1;line-height:1.7;white-space:pre-wrap;\">{{ JSON.parse($('Gemini Generate Posts1').item.json.candidates[0].content.parts[0].text).linkedin }}</p>\n              </div>\n            </td>\n          </tr>\n\n          <!-- Discord Post Preview -->\n          <tr>\n            <td style=\"padding:0 36px 28px;\">\n              <div style=\"background:rgba(255,255,255,0.02);border:1px solid rgba(124,58,237,0.2);border-radius:12px;padding:20px 24px;\">\n                <p style=\"margin:0 0 12px;font-size:11px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:#a78bfa;\">🟣 DISCORD POST</p>\n                <p style=\"margin:0;font-size:13px;color:#cbd5e1;line-height:1.7;\">{{ JSON.parse($('Gemini Generate Posts1').item.json.candidates[0].content.parts[0].text).discord }}</p>\n              </div>\n            </td>\n          </tr>\n\n          <!-- CTA Buttons -->\n          <tr>\n            <td style=\"padding:0 36px 32px;\">\n              <table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">\n                <tr>\n                  <td width=\"48%\" align=\"center\" style=\"padding-right:8px;\">\n                    <a href=\"http://localhost:5678/webhook-test/approval-response?action=approve&blog_id={{ $('FastAPI Store Blog1').item.json.blog_id }}&draft_id={{ $('Save Draft to SQLite1').item.json.draft_id }}\"\n                       style=\"display:block;background:linear-gradient(135deg,#16a34a,#15803d);color:#ffffff;text-decoration:none;padding:14px 24px;border-radius:10px;font-size:14px;font-weight:700;text-align:center;letter-spacing:0.3px;\">\n                      ✅ APPROVE & PUBLISH\n                    </a>\n                  </td>\n                  <td width=\"48%\" align=\"center\" style=\"padding-left:8px;\">\n                    <a href=\"http://localhost:5678/webhook-test/approval-response?action=reject&blog_id={{ $('FastAPI Store Blog1').item.json.blog_id }}&draft_id={{ $('Save Draft to SQLite1').item.json.draft_id }}\"\n                       style=\"display:block;background:rgba(220,38,38,0.15);border:1px solid rgba(220,38,38,0.4);color:#f87171;text-decoration:none;padding:14px 24px;border-radius:10px;font-size:14px;font-weight:700;text-align:center;letter-spacing:0.3px;\">\n                      ❌ REJECT\n                    </a>\n                  </td>\n                </tr>\n              </table>\n            </td>\n          </tr>\n\n          <!-- Footer -->\n          <tr>\n            <td style=\"padding:20px 36px;border-top:1px solid rgba(255,255,255,0.05);\">\n              <table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">\n                <tr>\n                  <td>\n                    <p style=\"margin:0;font-size:11px;color:#334155;\">⚡ AI-Powered Multimodal Campaign Automation</p>\n                    <p style=\"margin:4px 0 0;font-size:11px;color:#1e293b;\">Gemini 2.0 Flash · Groq Vision · ChromaDB RAG</p>\n                  </td>\n                  <td align=\"right\">\n                    <p style=\"margin:0;font-size:11px;color:#334155;\">Draft ID: {{ $('Save Draft to SQLite1').item.json.draft_id }}</p>\n                    <p style=\"margin:4px 0 0;font-size:11px;color:#1e293b;\">{{ new Date().toLocaleDateString('en-US', {year:'numeric',month:'long',day:'numeric'}) }}</p>\n                  </td>\n                </tr>\n              </table>\n            </td>\n          </tr>\n\n        </table>\n      </td>\n    </tr>\n  </table>\n</body>\n</html>",
+        "options": {}
+      },
+      "id": "7cc38e65-31f4-40dd-b38e-947998a45a87",
+      "name": "Gmail Send Approval Email1",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [
+        -384,
+        1232
+      ],
+      "webhookId": "2c39ee5a-2827-4d76-868d-bca092b0ce60",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "LhA2dv0acFXohRre",
+          "name": "Gmail account"
+        }
+      },
+      "notes": "Sends styled HTML email with Approve/Reject buttons. Update YOUR_EMAIL@gmail.com"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "6d5edeaf-110f-4e60-9d12-9b626b718bf2",
+              "name": "",
+              "value": "",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        -384,
+        1456
+      ],
+      "id": "4d8f6990-cfe9-46fc-83c2-6764d8588798",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8000/api/save-result",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "704b3b70-1bfd-4270-a9c1-415cf0e907bd",
+      "name": "Save Draft to SQLite1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -672,
+        1360
+      ],
+      "notes": "Saves PASS or REVIEW posts as drafts — returns draft_id for Gmail approval link"
+    },
+    {
+      "parameters": {
+        "jsCode": "const blog = $('FastAPI Store Blog1').first().json;\nconst generated = $('Gemini Generate Posts1').first().json;\nconst quality = $('Groq Grounding & Quality Gate1').first().json;\n\nconst qualityData = JSON.parse(\n  quality.choices[0].message.content\n);\n\nconst posts =\n  generated.candidates?.[0]?.content?.parts?.[0]?.text || \"\";\n\nreturn [\n  {\n    json: {\n      blog_id: blog.blog_id,\n      posts: posts,\n      status: \"blocked\",\n      quality_score: qualityData.quality_score,\n      quality_status: qualityData.status,\n      grounding_score: qualityData.grounding_score,\n      claims_match: qualityData.claims_match,\n      reason: qualityData.reason\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -944,
+        1104
+      ],
+      "id": "5749e528-21b4-464a-86e9-f09a2c358857",
+      "name": "Prepare Blocked Record"
+    },
+    {
+      "parameters": {
+        "jsCode": "const blog = $('FastAPI Store Blog1').first().json;\nconst generated = $('Gemini Generate Posts1').first().json;\nconst quality = $('Groq Grounding & Quality Gate1').first().json;\n\n// Quality parse\nlet rawQuality = quality.choices?.[0]?.message?.content || \"\";\nrawQuality = rawQuality.replace(/```json/gi, \"\").replace(/```/g, \"\").trim();\nlet qualityData;\ntry {\n  qualityData = JSON.parse(rawQuality);\n} catch (e) {\n  throw new Error(\"Quality parse error: \" + rawQuality);\n}\n\n// Gemini posts parse\nconst postsRaw = generated.candidates?.[0]?.content?.parts?.[0]?.text || \"\";\nconst finishReason = generated.candidates?.[0]?.finishReason || \"\";\n\n// ✅ MAX_TOKENS check\nif (finishReason === \"MAX_TOKENS\") {\n  throw new Error(\"Gemini output truncated — increase maxOutputTokens to 4096 in Gemini node\");\n}\n\nlet linkedinPost = \"\";\nlet discordPost = \"\";\n\ntry {\n  let cleaned = postsRaw.replace(/```json/gi, \"\").replace(/```/g, \"\").trim();\n  const jsonMatch = cleaned.match(/\\{[\\s\\S]*\\}/);\n  if (jsonMatch) cleaned = jsonMatch[0];\n  const parsed = JSON.parse(cleaned);\n  linkedinPost = parsed.linkedin || parsed.LinkedIn || \"\";\n  discordPost  = parsed.discord  || parsed.Discord  || \"\";\n} catch (e) {\n  // Regex fallback — incomplete JSON bhi handle kare\n  const liMatch = postsRaw.match(/\"linkedin\"\\s*:\\s*\"([\\s\\S]*?)\"\\s*,?\\s*\"discord\"/i);\n  const diMatch = postsRaw.match(/\"discord\"\\s*:\\s*\"([\\s\\S]*?)\"\\s*\\}?\\s*$/i);\n\n  if (liMatch) linkedinPost = liMatch[1].replace(/\\\\n/g, '\\n').replace(/\\\\\"/g, '\"').trim();\n  if (diMatch) discordPost  = diMatch[1].replace(/\\\\n/g, '\\n').replace(/\\\\\"/g, '\"').trim();\n\n  // Last resort — linkedin text seedha nikalo agar discord missing bhi ho\n  if (!linkedinPost) {\n    const liOnly = postsRaw.match(/\"linkedin\"\\s*:\\s*\"([\\s\\S]{50,})\"/i);\n    if (liOnly) linkedinPost = liOnly[1].replace(/\\\\n/g, '\\n').replace(/\\\\\"/g, '\"').trim();\n  }\n}\n\nif (!linkedinPost) {\n  throw new Error(\"LinkedIn post empty! finishReason: \" + finishReason + \" | Raw: \" + postsRaw.substring(0, 300));\n}\n\n// image carry forward\nconst webhookBody = $('Webhook Trigger1').first().json.body || {};\nconst fetchedBlog = $('FastAPI Fetch Blog1').first().json || {};\n\nreturn [{\n  json: {\n    blog_id:         blog.blog_id,\n    posts:           postsRaw,\n    linkedin_post:   linkedinPost,\n    discord_post:    discordPost,\n    status:          \"draft\",\n    quality_score:   qualityData.quality_score   ?? 0,\n    quality_status:  qualityData.status          ?? \"REVIEW\",\n    grounding_score: qualityData.grounding_score ?? 0,\n    claims_match:    qualityData.claims_match    ?? false,\n    reason:          qualityData.reason          ?? \"\",\n    has_image:       webhookBody.has_image || fetchedBlog.has_image || false,\n    image_base64:    webhookBody.image_base64 || fetchedBlog.image_base64 || \"\"\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -928,
+        1360
+      ],
+      "id": "d8fa5c09-af01-4cff-8a97-228c85bcdc71",
+      "name": "Prepare Draft Record"
+    },
+    {
+      "parameters": {
+        "jsCode": "const action = $json.query?.action || '';\nconst draft_id = $json.query?.draft_id || '';\nconst blog_id = $json.query?.blog_id || '';\n\nreturn [{\n  json: {\n    action: action,\n    draft_id: draft_id,\n    blog_id: blog_id\n  }\n}];"
+      },
+      "id": "24c6218f-0367-4805-8b8d-8a3d44ccaa54",
+      "name": "Extract Query Params",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2576,
+        1664
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const extracted = $('Extract Query Params').first().json;\nconst draft = $json;\n\nreturn [{\n  json: {\n    action: extracted.action,\n    draft_id: extracted.draft_id,\n    blog_id: extracted.blog_id,\n    linkedin_post: draft.linkedin_post || '',\n    discord_post: draft.discord_post || '',\n    quality_score: draft.quality_score || 0,\n    has_image:     draft.has_image     || false,\n    image_base64:  draft.image_base64  || ''\n  }\n}];"
+      },
+      "id": "68c61151-233d-433c-ac72-75774323849c",
+      "name": "Merge Action + Draft",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2128,
+        1664
+      ]
+    },
+    {
+      "parameters": {
+        "path": "approval-response",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "5adba581-70c1-446b-9893-3d49439a56c6",
+      "name": "Wait Approval Webhook2",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        -2816,
+        1664
+      ],
+      "webhookId": "a75dc542-4a7a-4219-9f5e-62c842fc4451"
+    },
+    {
+      "parameters": {
+        "url": "=http://127.0.0.1:8000/api/draft/{{ $json.blog_id }}",
+        "options": {}
+      },
+      "id": "a5aca598-73b5-4460-a543-863219f8c862",
+      "name": "Fetch Approved Draft",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -2352,
+        1664
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.action }}",
+              "value2": "approve"
+            }
+          ]
+        }
+      },
+      "id": "2a434801-5238-4772-aafa-5df828313ecd",
+      "name": "Approved?2",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -1904,
+        1664
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  JSON.stringify({\n    content: $('Merge Action + Draft').first().json.discord_post,\n    username: \"Campaign Automation\",\n    embeds: [\n      {\n        color: 7864319,\n        footer: {\n          text: \"AI-Powered Multimodal Campaign Automation\"\n        }\n      }\n    ]\n  })\n}}",
+        "options": {}
+      },
+      "id": "5fc72dcb-e0c4-45f5-86de-e575477f03c9",
+      "name": "Publish Discord2",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -672,
+        1648
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8000/api/save-result",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  JSON.stringify({\n    blog_id: $('Merge Action + Draft').first().json.blog_id,\n    draft_id: $('Merge Action + Draft').first().json.draft_id,\n    linkedin_status: \"published\",\n    discord_status: \"published\",\n    quality_score: $('Merge Action + Draft').first().json.quality_score,\n    published_at: new Date().toISOString()\n  })\n}}",
+        "options": {}
+      },
+      "id": "b38586dd-b490-4f2a-8ffb-4b706ff205ea",
+      "name": "Save Publish History2",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -448,
+        1648
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://127.0.0.1:8000/api/draft/{{ $('Merge Action + Draft').first().json.draft_id }}/reject",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  JSON.stringify({\n    draft_id: $('Merge Action + Draft').first().json.draft_id,\n    status: \"rejected\"\n  })\n}}",
+        "options": {}
+      },
+      "id": "0a760e7c-0129-4fa7-81b1-ca7a9bfc46d9",
+      "name": "Mark Rejected in SQLite2",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -1616,
+        1808
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.linkedin.com/rest/images?action=initializeUpload",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_LINKEDIN_ACCESS_TOKEN"
+            },
+            {
+              "name": "LinkedIn-Version",
+              "value": "202606"
+            },
+            {
+              "name": "X-Restli-Protocol-Version",
+              "value": "2.0.0"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ initializeUploadRequest: { owner: 'urn:li:person:YOUR_PERSON_URN' } }) }}",
+        "options": {}
+      },
+      "id": "29084ce4-afc6-40a3-bdaa-2ac8126b0649",
+      "name": "Register Image Upload",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -1600,
+        1648
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $('Register Image Upload').first().json.value.uploadUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_LINKEDIN_ACCESS_TOKEN"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/octet-stream"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data",
+        "options": {}
+      },
+      "id": "7ad50a16-458e-4c33-ba17-721646bdcd34",
+      "name": "Upload Image Binary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -1152,
+        1648
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.linkedin.com/rest/posts",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_LINKEDIN_ACCESS_TOKEN"
+            },
+            {
+              "name": "LinkedIn-Version",
+              "value": "202606"
+            },
+            {
+              "name": "X-Restli-Protocol-Version",
+              "value": "2.0.0"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  JSON.stringify({\n    author: \"urn:li:person:YOUR_PERSON_URN\",\n    commentary: $(\"Merge Action + Draft\").first().json.linkedin_post || \"\",\n    visibility: \"PUBLIC\",\n    distribution: {\n      feedDistribution: \"MAIN_FEED\",\n      targetEntities: [],\n      thirdPartyDistributionChannels: []\n    },\n    lifecycleState: \"PUBLISHED\",\n    isReshareDisabledByAuthor: false,\n    content: {\n      media: {\n        id: $(\"Register Image Upload\").first().json.value.image\n      }\n    }\n  })\n}}",
+        "options": {}
+      },
+      "id": "3822f4b0-7c57-47a0-a3fd-f0467d334e2b",
+      "name": "Publish LinkedIn",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -912,
+        1648
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $('Merge Action + Draft').first().json;\n\nconst base64 = data.image_base64 || '';\n\nif (!base64) {\n  throw new Error('image_base64 is empty');\n}\n\nreturn [\n  {\n    json: {\n      blog_id: data.blog_id,\n      draft_id: data.draft_id,\n      has_image: data.has_image\n    },\n    binary: {\n      data: {\n        data: base64,\n        mimeType: 'image/png',\n        fileName: 'campaign-image.png'\n      }\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1360,
+        1648
+      ],
+      "id": "f6c8335e-81c0-4116-833d-a34cdeee1b1a",
+      "name": "Prepare Image Binary"
+    }
+  ],
+  "connections": {
+    "Webhook Trigger1": {
+      "main": [
+        [
+          {
+            "node": "FastAPI Store Blog1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FastAPI Store Blog1": {
+      "main": [
+        [
+          {
+            "node": "FastAPI Fetch Blog1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FastAPI Fetch Blog1": {
+      "main": [
+        [
+          {
+            "node": "Query ChromaDB Brand Memory1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query ChromaDB Brand Memory1": {
+      "main": [
+        [
+          {
+            "node": "Gemini Generate Posts1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Generate Posts1": {
+      "main": [
+        [
+          {
+            "node": "Image Uploaded?1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Image Uploaded?1": {
+      "main": [
+        [
+          {
+            "node": "Groq Multimodal Image Check1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Groq Grounding & Quality Gate1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Multimodal Image Check1": {
+      "main": [
+        [
+          {
+            "node": "Groq Grounding & Quality Gate1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Grounding & Quality Gate1": {
+      "main": [
+        [
+          {
+            "node": "Is Blocked?1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Blocked?1": {
+      "main": [
+        [
+          {
+            "node": "Prepare Blocked Record",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Draft Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        []
+      ]
+    },
+    "Save Draft to SQLite1": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Gmail Send Approval Email1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Blocked Record": {
+      "main": [
+        [
+          {
+            "node": "Save Blocked Record1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Draft Record": {
+      "main": [
+        [
+          {
+            "node": "Save Draft to SQLite1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Query Params": {
+      "main": [
+        [
+          {
+            "node": "Fetch Approved Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Action + Draft": {
+      "main": [
+        [
+          {
+            "node": "Approved?2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Approval Webhook2": {
+      "main": [
+        [
+          {
+            "node": "Extract Query Params",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Approved Draft": {
+      "main": [
+        [
+          {
+            "node": "Merge Action + Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved?2": {
+      "main": [
+        [
+          {
+            "node": "Register Image Upload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Rejected in SQLite2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publish Discord2": {
+      "main": [
+        [
+          {
+            "node": "Save Publish History2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Register Image Upload": {
+      "main": [
+        [
+          {
+            "node": "Prepare Image Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload Image Binary": {
+      "main": [
+        [
+          {
+            "node": "Publish LinkedIn",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publish LinkedIn": {
+      "main": [
+        [
+          {
+            "node": "Publish Discord2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Image Binary": {
+      "main": [
+        [
+          {
+            "node": "Upload Image Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "64392526e4336d2b2fc8eb7b0c5ad9d6c5b2f3ac0803236f04700084480c9bdc"
+  }
+}
