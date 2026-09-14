@@ -10,7 +10,7 @@ The system combines **Generative AI, RAG, multimodal AI, LLM-based quality evalu
 
 ---
 
-## 🚀 What It Does
+## 🚀 What It Does:
 
 Instead of manually creating, reviewing, approving, and publishing content for each platform, the system automates the complete workflow.
 
